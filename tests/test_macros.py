@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Test script for DuckDB macros"""
+import duckdb
+import sys
+import re
+
+
+def split_sql_statements(sql_content):
+    """Split SQL content into statements, respecting string literals."""
+    statements = []
+    current = []
+    in_string = False
+    string_char = None
+
+    i = 0
+    while i < len(sql_content):
+        char = sql_content[i]
+
+        # Handle string literals
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+            current.append(char)
+        elif char == string_char and in_string:
+            # Check for escaped quote
+            if i + 1 < len(sql_content) and sql_content[i + 1] == string_char:
+                current.append(char)
+                current.append(char)
+                i += 1
+            else:
+                in_string = False
+                string_char = None
+                current.append(char)
+        elif char == ';' and not in_string:
+            # End of statement
+            stmt = ''.join(current).strip()
+            if stmt and not stmt.startswith('--'):
+                statements.append(stmt)
+            current = []
+        else:
+            current.append(char)
+        i += 1
+
+    # Don't forget last statement if no trailing semicolon
+    if current:
+        stmt = ''.join(current).strip()
+        if stmt and not stmt.startswith('--'):
+            statements.append(stmt)
+
+    return statements
+
+
+def test_macros():
+    con = duckdb.connect(':memory:')
+
+    # Load required extensions
+    print("Loading extensions...")
+    extensions = ['httpfs', 'http_client', 'json', 'shellfs']
+    for ext in extensions:
+        try:
+            con.sql(f"INSTALL {ext};")
+            con.sql(f"LOAD {ext};")
+            print(f"  [OK] {ext}")
+        except Exception:
+            try:
+                con.sql(f"INSTALL {ext} FROM community;")
+                con.sql(f"LOAD {ext};")
+                print(f"  [OK] {ext} (community)")
+            except Exception as e:
+                print(f"  [SKIP] {ext}: {e}")
+
+    # Load macros from file
+    print("\nLoading macros...")
+    with open('src/agent_farm/macros.sql', 'r', encoding='utf-8') as f:
+        sql = f.read()
+
+    # Split properly respecting string literals
+    statements = split_sql_statements(sql)
+
+    errors = []
+    success = 0
+    for stmt in statements:
+        # Skip comment-only statements
+        lines = [l for l in stmt.split('\n') if l.strip() and not l.strip().startswith('--')]
+        if not lines:
+            continue
+        try:
+            con.sql(stmt)
+            success += 1
+        except Exception as e:
+            errors.append((stmt[:60], str(e)))
+
+    print(f"  Loaded {success} statements, {len(errors)} errors")
+    if errors:
+        print("\n  Errors:")
+        for stmt, err in errors[:5]:  # Show first 5 errors
+            print(f"    - {stmt}... -> {err[:80]}")
+
+    # Test individual macros
+    print("\n" + "="*50)
+    print("Testing macros:")
+    print("="*50)
+
+    tests = [
+        ("url_encode", "SELECT url_encode('hello world & test=1')"),
+        ("now_iso", "SELECT now_iso()"),
+        ("now_unix", "SELECT now_unix()"),
+        ("fetch_json", "SELECT fetch_json('https://httpbin.org/get')"),
+        ("ddg_instant", "SELECT ddg_instant('Python programming')"),
+    ]
+
+    passed = 0
+    failed = 0
+
+    for name, query in tests:
+        try:
+            result = con.sql(query).fetchone()[0]
+            # Truncate long results
+            result_str = str(result)[:100]
+            print(f"  [PASS] {name}: {result_str}...")
+            passed += 1
+        except Exception as e:
+            print(f"  [FAIL] {name}: {e}")
+            failed += 1
+
+    print(f"\n{'='*50}")
+    print(f"Results: {passed} passed, {failed} failed")
+    print("="*50)
+
+    return failed == 0
+
+
+if __name__ == "__main__":
+    sys.exit(0 if test_macros() else 1)

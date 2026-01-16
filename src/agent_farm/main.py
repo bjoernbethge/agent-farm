@@ -93,7 +93,7 @@ def main():
     # Initialize DuckDB connection
     con = duckdb.connect(database=":memory:")
 
-    print("initializing queries...", file=sys.stderr)
+    print("Initializing queries...", file=sys.stderr)
 
     # 1. Install & Load Extensions
     extensions = [

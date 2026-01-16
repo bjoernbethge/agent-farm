@@ -26,7 +26,7 @@ def test_server_startup():
 
     print("Server seems to be running. Sending basic JSON-RPC request...")
 
-    # Simple JSON-RPC initialize request (just to see if we get a response or crashes)
+    # Simple JSON-RPC initialize request (just to see if we get a response or if it crashes)
     # Note: real MCP handshake is more complex, but this proves stdin/stdout is hooked up.
     rpc_request = (
         '{"jsonrpc": "2.0", "id": 1, "method": "initialize", '

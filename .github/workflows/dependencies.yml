@@ -6,6 +6,11 @@ on:
     - cron: '0 8 * * 1'
   workflow_dispatch: # Allow manual trigger
 
+# Ensure only one dependency update runs at a time
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
 permissions:
   contents: write
   pull-requests: write

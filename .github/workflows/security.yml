@@ -8,6 +8,12 @@ on:
   schedule:
     # Run security scan weekly on Monday at 00:00 UTC
     - cron: '0 0 * * 1'
+  workflow_dispatch: # Allow manual runs
+
+# Cancel in-progress runs on the same branch/PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -16,6 +22,8 @@ permissions:
 jobs:
   codeql:
     name: CodeQL Analysis
+    # Run on push to main or on schedule, skip on PRs to reduce redundancy
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       security-events: write
@@ -62,6 +70,14 @@ jobs:
         with:
           version: "latest"
 
+      - name: Cache uv dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-uv-
+
       - name: Install dependencies
         run: uv sync --dev
 
@@ -72,6 +88,8 @@ jobs:
 
   docker-scan:
     name: Docker Image Security Scan
+    # Run on push to main, schedule, or manual dispatch; skip on PRs unless requested
+    if: github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'security')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

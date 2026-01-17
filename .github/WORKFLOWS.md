@@ -4,21 +4,36 @@ This document describes all automated workflows configured for the agent-farm re
 
 ## Overview
 
-The repository uses GitHub Actions for continuous integration, security scanning, dependency management, and automated releases. All workflows follow best practices for Python projects and are optimized for performance with caching strategies.
+The repository uses GitHub Actions for continuous integration, security scanning, dependency management, and automated releases. All workflows follow best practices for Python projects and are optimized for performance with caching strategies and concurrency controls.
+
+## Key Optimizations
+
+All workflows include:
+- **Concurrency Controls**: Automatically cancel outdated workflow runs on the same branch/PR
+- **Dependency Caching**: All jobs cache uv dependencies for faster execution
+- **Manual Triggers**: Support for `workflow_dispatch` to manually run workflows when needed
+- **Job Summaries**: Key workflows generate GitHub Actions job summaries for better visibility
+- **Parallel Execution**: Independent jobs run in parallel for optimal performance
 
 ## Workflows
 
 ### 1. CI Workflow (`.github/workflows/ci.yml`)
 
-**Trigger**: Push to main/master, Pull requests
+**Trigger**: Push to main/master, Pull requests, Manual dispatch
 
 **Purpose**: Ensures code quality and functionality
 
 **Jobs**:
-- **Lint**: Runs Ruff linter and format checker
-- **Test**: Runs pytest across Python 3.11 and 3.12
+- **Lint**: Runs Ruff linter and format checker (with dependency caching)
+- **Test**: Runs pytest across Python 3.11 and 3.12 (with test summaries)
 - **Docker**: Validates Docker image builds
-- **Validate Macros**: Tests SQL macro definitions
+- **Validate Macros**: Tests SQL macro definitions (with dependency caching)
+
+**Optimizations**:
+- ✅ All jobs use uv dependency caching
+- ✅ Concurrency control cancels outdated runs
+- ✅ Jobs run in parallel for speed
+- ✅ Test summaries displayed in GitHub UI
 
 **Status Badge**:
 ```markdown
@@ -32,15 +47,20 @@ The repository uses GitHub Actions for continuous integration, security scanning
 
 ### 2. Release Workflow (`.github/workflows/release.yml`)
 
-**Trigger**: Git tags matching `v*.*.*` (e.g., `v0.1.6`)
+**Trigger**: Git tags matching `v*.*.*` (e.g., `v0.1.6`), Manual dispatch
 
 **Purpose**: Automates package distribution
 
 **Jobs**:
-1. **Build**: Creates distribution packages (wheel and sdist)
+1. **Build**: Creates distribution packages (wheel and sdist) with dependency caching
 2. **Publish to PyPI**: Uploads to PyPI using trusted publishing
 3. **GitHub Release**: Creates release with auto-generated notes
 4. **Docker Release**: Builds and pushes multi-arch Docker images to GHCR
+
+**Optimizations**:
+- ✅ Build job uses uv dependency caching
+- ✅ Concurrency control prevents overlapping releases
+- ✅ Jobs run in parallel where possible (PyPI and Docker after build)
 
 **How to Release**:
 ```bash
@@ -69,13 +89,20 @@ git push origin v0.1.6
 - Push to main/master
 - Pull requests
 - Weekly schedule (Monday 00:00 UTC)
+- Manual dispatch
 
 **Purpose**: Identifies security vulnerabilities
 
 **Jobs**:
-- **CodeQL Analysis**: Static analysis for security issues
-- **Dependency Scan**: Checks dependencies for known vulnerabilities using pip-audit
-- **Docker Scan**: Scans Docker image with Trivy
+- **CodeQL Analysis**: Static analysis for security issues (runs on push/schedule only, not PRs)
+- **Dependency Scan**: Checks dependencies for known vulnerabilities using pip-audit (with caching)
+- **Docker Scan**: Scans Docker image with Trivy (runs on push/schedule, or PRs with 'security' label)
+
+**Optimizations**:
+- ✅ CodeQL skips PRs to reduce redundancy (already runs on push to main)
+- ✅ Docker scan skips PRs unless labeled 'security'
+- ✅ Dependency scan uses caching for faster execution
+- ✅ Concurrency control cancels outdated runs
 
 **Security Alerts**: Results are uploaded to GitHub Security tab
 
@@ -98,6 +125,10 @@ git push origin v0.1.6
 3. Runs linter
 4. Creates PR if changes detected
 
+**Optimizations**:
+- ✅ Concurrency control ensures only one update runs at a time
+- ✅ Manual trigger support for on-demand updates
+
 **PR Details**:
 - Branch: `automated/dependency-updates`
 - Labels: `dependencies`, `automated`
@@ -112,18 +143,19 @@ gh workflow run dependencies.yml
 
 ### 5. Code Quality (`.github/workflows/code-quality.yml`)
 
-**Trigger**: Push to main/master, Pull requests
+**Trigger**: Push to main/master, Pull requests, Manual dispatch
 
 **Purpose**: Maintains code quality standards
 
 **Checks**:
 - **Quality Checks**:
-  - Code complexity (radon)
+  - Code complexity (radon) - now properly installed as dev dependency
   - Maintainability index
   - Type checking (if mypy available)
   - TODO/FIXME detection
   - Print statement usage
-  - Code coverage reporting
+  - Code coverage reporting (with pytest-cov)
+  - Quality summaries in GitHub UI
 
 - **Documentation Check**:
   - Markdown link validation
@@ -134,6 +166,13 @@ gh workflow run dependencies.yml
   - Required files (README, LICENSE, etc.)
   - Large file detection
   - Python file headers
+
+**Optimizations**:
+- ✅ Proper dependency management - radon and pytest-cov in pyproject.toml
+- ✅ Dependency caching for faster execution
+- ✅ Concurrency control cancels outdated runs
+- ✅ Quality metrics displayed in job summaries
+- ✅ Jobs run in parallel for speed
 
 **Coverage Reports**: Uploaded to Codecov on pull requests
 
@@ -159,11 +198,13 @@ cache-to: type=gha,mode=max
 
 ## Performance Optimizations
 
-1. **Parallel Jobs**: Independent jobs run in parallel
+1. **Parallel Jobs**: Independent jobs run in parallel across all workflows
 2. **Matrix Strategy**: Tests run concurrently across Python versions
 3. **Fail-fast: false**: Complete all tests even if one fails
-4. **Smart Caching**: Dependencies cached based on lock file hash
+4. **Smart Caching**: All jobs cache dependencies based on lock file hash
 5. **Selective Triggers**: Workflows only run when necessary
+6. **Concurrency Controls**: Outdated workflow runs are automatically cancelled
+7. **Optimized Security Scans**: CodeQL and Docker scans skip PRs to reduce redundancy
 
 ## Secrets and Permissions
 
@@ -239,16 +280,21 @@ docker build -t agent-farm:test .
 
 ## Manual Workflow Dispatch
 
-Some workflows support manual triggering:
+All workflows support manual triggering:
 
 ```bash
 # Using GitHub CLI
+gh workflow run ci.yml
 gh workflow run dependencies.yml
 gh workflow run security.yml
+gh workflow run code-quality.yml
+gh workflow run release.yml  # Use with caution!
 
 # Via UI
 Actions → Select Workflow → Run workflow
 ```
+
+**Note**: The release workflow has `workflow_dispatch` but should be used carefully - normally releases are triggered by tags.
 
 ## Best Practices
 

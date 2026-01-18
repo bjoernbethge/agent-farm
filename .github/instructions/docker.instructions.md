@@ -152,8 +152,8 @@ COPY src/ src/
 COPY scripts/ scripts/
 COPY README.md .
 
-# Pre-install DuckDB extensions
-RUN /app/.venv/bin/python scripts/install_extensions.py
+# Pre-install DuckDB extensions (using python from venv)
+RUN .venv/bin/python scripts/install_extensions.py
 
 # Create non-root user and data directory
 RUN useradd -m farmer && \

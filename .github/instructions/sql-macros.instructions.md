@@ -23,7 +23,10 @@ When creating or modifying DuckDB SQL macros in the agent-farm repository, follo
 ### Error Handling
 
 1. **NULL safety** - Handle NULL inputs gracefully with COALESCE or NULL checks
-2. **TRY() function** - Wrap error-prone operations in TRY() to prevent crashes
+2. **TRY() function** - Wrap error-prone operations in TRY() to prevent crashes and return NULL on errors:
+   ```sql
+   SELECT TRY(CAST('invalid' AS INTEGER))  -- Returns NULL instead of error
+   ```
 3. **Default values** - Provide sensible defaults for optional parameters
 4. **Validation** - Validate inputs before processing when possible
 

@@ -52,6 +52,14 @@ from agent_farm import utils
    ```python
    try:
        con.sql("INSTALL extension_name;")
+   except Exception:
+       print(f"Extension not available, trying community", file=sys.stderr)
+       try:
+           con.sql("INSTALL extension_name FROM community;")
+       except Exception as e:
+           print(f"Warning: Could not install extension: {e}", file=sys.stderr)
+   
+   try:
        con.sql("LOAD extension_name;")
    except Exception as e:
        print(f"Warning: Could not load extension: {e}", file=sys.stderr)

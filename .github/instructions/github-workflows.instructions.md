@@ -32,7 +32,7 @@ When creating or modifying GitHub Actions workflows in the agent-farm repository
    - name: Cache uv dependencies
      uses: actions/cache@v4
      with:
-       path: ~/.cache/uv
+       path: ~/.cache/uv  # Linux/macOS. Windows uses ~\AppData\Local\uv
        key: ${{ runner.os }}-uv-${{ hashFiles('**/uv.lock') }}
        restore-keys: |
          ${{ runner.os }}-uv-

@@ -5,8 +5,8 @@
 **agent-farm** is a DuckDB-powered MCP Server providing SQL macros for LLM agents (web search, Python execution, RAG via SQL).
 
 **Key Facts:**
-- **Language:** Python 3.11+, Package Manager: **uv** (NOT pip), Database: DuckDB 1.4.2+
-- **Structure:** 190 lines main.py, 800+ lines SQL macros, 1 comprehensive test file
+- **Language:** Python 3.11+, Package Manager: **uv** (NOT pip), Database: DuckDB ≥1.1.0
+- **Structure:** 190 lines main.py, 551 lines SQL macros, 2 test files (188 lines total)
 
 ## CRITICAL: Run These Commands (Validated, ~60sec first run)
 
@@ -14,11 +14,11 @@
 # 1. ALWAYS FIRST: Install dependencies (if uv not found: pip install uv)
 uv sync --dev
 
-# 2. BEFORE COMMITTING: Lint and format
+# 2. BEFORE COMMITTING: Lint and format (instant)
 uv run ruff check --fix src/ tests/
 uv run ruff format src/ tests/
 
-# 3. BEFORE COMMITTING: Test (~4sec, expect "1 passed" + 1 warning)
+# 3. BEFORE COMMITTING: Test (~4sec, expect tests to pass with warnings)
 uv run pytest tests/ -v
 
 # 4. Run server (optional)
@@ -53,11 +53,11 @@ agent-farm/
 ├── src/agent_farm/
 │   ├── __init__.py
 │   ├── main.py            # 190 lines: Entry point, extension loading, MCP server
-│   ├── macros.sql         # 800+ lines: SQL macros for LLM integration
+│   ├── macros.sql         # 551 lines: SQL macros for LLM integration
 │   └── py.typed
 ├── tests/
-│   ├── test_macros.py     # Main test file with SQL parser
-│   └── verify_farm.py     # Verification script
+│   ├── test_macros.py     # 137 lines: Main test with SQL parser helper
+│   └── verify_farm.py     # 51 lines: Verification script
 ├── scripts/
 │   ├── install_extensions.py  # Pre-install DuckDB extensions
 │   └── test_extensions.py     # Test extension availability
@@ -132,7 +132,7 @@ agent-farm/
 uv sync --dev                              # 1. Update deps
 uv run ruff format src/ tests/             # 2. Format
 uv run ruff check --fix src/ tests/        # 3. Lint
-uv run pytest tests/ -v                    # 4. Test (expect "1 passed")
+uv run pytest tests/ -v                    # 4. Test (ensure all tests pass)
 # Then commit - CI will run same checks
 ```
 

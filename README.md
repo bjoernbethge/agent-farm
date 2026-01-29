@@ -220,11 +220,19 @@ Comprehensive coding guidelines are available for GitHub Copilot:
 
 #### Repository-Wide Instructions
 [`.github/copilot-instructions.md`](.github/copilot-instructions.md) covers:
+- Repository onboarding behavior and workflows
+- Context7 MCP and Serena MCP server setup
 - Project architecture and conventions
 - SQL macro development patterns
 - Testing and quality standards
 - MCP protocol integration
 - Performance optimization tips
+
+#### Copilot Prompt Files
+The `.github/prompts/` directory contains specialized prompt files for common workflows:
+- [`onboarding-plan.prompt.md`](.github/prompts/onboarding-plan.prompt.md) - Generate phased onboarding plans for new contributors
+
+To use a prompt file, open GitHub Copilot Chat and type `/onboarding-plan` (or the relevant prompt name).
 
 #### Path-Specific Instructions
 The `.github/instructions/` directory contains specialized guidelines for different file types:

@@ -60,7 +60,9 @@ Install recommended extensions:
 - Ruff
 - GitHub Copilot (optional)
 
-The repository includes Copilot instructions in `.github/copilot-instructions.md`.
+The repository includes comprehensive Copilot configurations:
+- `.github/copilot-instructions.md` - Complete instructions for Copilot agents including MCP setup
+- `.github/prompts/` - Prompt files for common workflows (e.g., `/onboarding-plan`)
 
 #### PyCharm
 Configure Python interpreter to use the virtual environment created by uv.

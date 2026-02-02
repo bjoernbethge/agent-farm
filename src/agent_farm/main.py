@@ -6,6 +6,47 @@ from pathlib import Path
 import duckdb
 
 
+def split_sql_statements(sql_content):
+    """Split SQL content into statements, respecting string literals."""
+    statements = []
+    current = []
+    in_string = False
+    string_char = None
+
+    i = 0
+    while i < len(sql_content):
+        char = sql_content[i]
+
+        if char in ("'", '"') and not in_string:
+            in_string = True
+            string_char = char
+            current.append(char)
+        elif char == string_char and in_string:
+            if i + 1 < len(sql_content) and sql_content[i + 1] == string_char:
+                current.append(char)
+                current.append(char)
+                i += 1
+            else:
+                in_string = False
+                string_char = None
+                current.append(char)
+        elif char == ";" and not in_string:
+            stmt = "".join(current).strip()
+            if stmt and not stmt.startswith("--"):
+                statements.append(stmt)
+            current = []
+        else:
+            current.append(char)
+        i += 1
+
+    if current:
+        stmt = "".join(current).strip()
+        if stmt and not stmt.startswith("--"):
+            statements.append(stmt)
+
+    return statements
+
+
 def find_mcp_config():
     """
     Discover MCP configuration files in standard locations.
@@ -157,18 +198,107 @@ def main():
             )
         """)
 
-    # 3. Load Macros
+    # 3. Create Agent Config Tables
+    print("Creating agent config tables...", file=sys.stderr)
+    con.sql("""
+        -- Agent configuration
+        CREATE TABLE IF NOT EXISTS agent_config (
+            id VARCHAR PRIMARY KEY,
+            name VARCHAR NOT NULL DEFAULT 'Desktop Agent',
+            role VARCHAR NOT NULL DEFAULT 'assistant',
+            security_profile VARCHAR NOT NULL DEFAULT 'standard',
+            model_backend VARCHAR NOT NULL DEFAULT 'ollama_local',
+            model_name VARCHAR DEFAULT 'llama3.2',
+            consent_given BOOLEAN DEFAULT FALSE,
+            created_at TIMESTAMP DEFAULT now(),
+            updated_at TIMESTAMP DEFAULT now()
+        );
+
+        -- Workspace definitions
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id VARCHAR PRIMARY KEY,
+            agent_id VARCHAR,
+            path VARCHAR NOT NULL,
+            name VARCHAR,
+            mode VARCHAR NOT NULL DEFAULT 'readOnly',
+            allowed_patterns VARCHAR[],
+            denied_patterns VARCHAR[]
+        );
+
+        -- MCP server configs for agent (separate from discovered mcp_servers)
+        CREATE TABLE IF NOT EXISTS agent_mcp_servers (
+            id VARCHAR PRIMARY KEY,
+            agent_id VARCHAR,
+            transport VARCHAR DEFAULT 'stdio',
+            endpoint VARCHAR,
+            command VARCHAR,
+            args VARCHAR[],
+            enabled BOOLEAN DEFAULT TRUE,
+            allowed_tools VARCHAR[],
+            disallowed_tools VARCHAR[]
+        );
+
+        -- Security policy
+        CREATE TABLE IF NOT EXISTS security_policy (
+            agent_id VARCHAR PRIMARY KEY,
+            shell_enabled BOOLEAN DEFAULT FALSE,
+            shell_allowlist VARCHAR[],
+            shell_blocklist VARCHAR[] DEFAULT [
+                'rm -rf', 'rm -r /', 'mkfs', 'dd if=', ':(){:|:&};:',
+                'chmod -R 777', 'curl | sh', 'wget | sh', '> /dev/sd'
+            ],
+            web_enabled BOOLEAN DEFAULT TRUE,
+            allowed_domains VARCHAR[],
+            blocked_domains VARCHAR[],
+            sensitive_patterns VARCHAR[] DEFAULT [
+                '*.env', '.env*', '*credentials*', '*secret*',
+                '*.pem', '*.key', '*password*'
+            ]
+        );
+
+        -- Audit log
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY,
+            session_id VARCHAR NOT NULL,
+            timestamp TIMESTAMP DEFAULT now(),
+            entry_type VARCHAR NOT NULL,
+            tool_name VARCHAR,
+            parameters JSON,
+            result JSON,
+            decision VARCHAR,
+            violations VARCHAR[]
+        );
+
+        -- Session state
+        CREATE TABLE IF NOT EXISTS agent_sessions (
+            id VARCHAR PRIMARY KEY,
+            agent_id VARCHAR,
+            started_at TIMESTAMP DEFAULT now(),
+            status VARCHAR DEFAULT 'active',
+            messages JSON DEFAULT '[]'
+        );
+    """)
+    print("Agent config tables created.", file=sys.stderr)
+
+    # 4. Load SQL Macros
     macros_path = os.path.join(os.path.dirname(__file__), "macros.sql")
     if os.path.exists(macros_path):
-        with open(macros_path, "r") as f:
+        with open(macros_path, "r", encoding="utf-8") as f:
             sql_script = f.read()
-            for statement in sql_script.split(";"):
-                if statement.strip():
-                    try:
-                        con.sql(statement)
-                    except Exception as e:
-                        print(f"Error executing macro SQL: {e}", file=sys.stderr)
-        print("Loaded macros.", file=sys.stderr)
+        statements = split_sql_statements(sql_script)
+        loaded = 0
+        for statement in statements:
+            lines = [
+                ln for ln in statement.split("\n") if ln.strip() and not ln.strip().startswith("--")
+            ]
+            if not lines:
+                continue
+            try:
+                con.sql(statement)
+                loaded += 1
+            except Exception as e:
+                print(f"Error executing macro: {e}", file=sys.stderr)
+        print(f"Loaded {loaded} macros.", file=sys.stderr)
 
     # 4. Create extension info table
     con.sql(f"""

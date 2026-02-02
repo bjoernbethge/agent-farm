@@ -277,6 +277,23 @@ def main():
             status VARCHAR DEFAULT 'active',
             messages JSON DEFAULT '[]'
         );
+
+        -- Pending approvals (SR-6.5)
+        CREATE TABLE IF NOT EXISTS pending_approvals (
+            id INTEGER PRIMARY KEY,
+            session_id VARCHAR NOT NULL,
+            agent_id VARCHAR,
+            tool_name VARCHAR NOT NULL,
+            tool_params JSON,
+            reason VARCHAR,
+            created_at TIMESTAMP DEFAULT now(),
+            status VARCHAR DEFAULT 'pending',
+            resolved_at TIMESTAMP,
+            resolved_by VARCHAR
+        );
+
+        -- Create sequence for audit log if not exists
+        CREATE SEQUENCE IF NOT EXISTS audit_seq START 1;
     """)
     print("Agent config tables created.", file=sys.stderr)
 

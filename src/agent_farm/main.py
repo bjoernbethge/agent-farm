@@ -297,33 +297,74 @@ def main():
     """)
     print("Agent config tables created.", file=sys.stderr)
 
-    # 4. Load SQL Macros
-    macros_path = os.path.join(os.path.dirname(__file__), "macros.sql")
-    if os.path.exists(macros_path):
-        with open(macros_path, "r", encoding="utf-8") as f:
-            sql_script = f.read()
-        statements = split_sql_statements(sql_script)
-        loaded = 0
-        for statement in statements:
-            lines = [
-                ln for ln in statement.split("\n") if ln.strip() and not ln.strip().startswith("--")
-            ]
-            if not lines:
-                continue
-            try:
-                con.sql(statement)
-                loaded += 1
-            except Exception as e:
-                print(f"Error executing macro: {e}", file=sys.stderr)
-        print(f"Loaded {loaded} macros.", file=sys.stderr)
+    # 4. Load SQL Macros from sql/ directory
+    sql_dir = os.path.join(os.path.dirname(__file__), "sql")
+    if os.path.isdir(sql_dir):
+        sql_files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql"))
+        total_loaded = 0
+        for sql_file in sql_files:
+            sql_path = os.path.join(sql_dir, sql_file)
+            with open(sql_path, "r", encoding="utf-8") as f:
+                sql_script = f.read()
+            statements = split_sql_statements(sql_script)
+            loaded = 0
+            for statement in statements:
+                lines = [
+                    ln
+                    for ln in statement.split("\n")
+                    if ln.strip() and not ln.strip().startswith("--")
+                ]
+                if not lines:
+                    continue
+                try:
+                    con.sql(statement)
+                    loaded += 1
+                except Exception as e:
+                    print(f"Error in {sql_file}: {e}", file=sys.stderr)
+            total_loaded += loaded
+            print(f"Loaded {loaded} macros from {sql_file}", file=sys.stderr)
+        print(f"Total: {total_loaded} macros loaded.", file=sys.stderr)
+    else:
+        # Fallback to legacy macros.sql
+        macros_path = os.path.join(os.path.dirname(__file__), "macros.sql")
+        if os.path.exists(macros_path):
+            with open(macros_path, "r", encoding="utf-8") as f:
+                sql_script = f.read()
+            statements = split_sql_statements(sql_script)
+            loaded = 0
+            for statement in statements:
+                lines = [
+                    ln
+                    for ln in statement.split("\n")
+                    if ln.strip() and not ln.strip().startswith("--")
+                ]
+                if not lines:
+                    continue
+                try:
+                    con.sql(statement)
+                    loaded += 1
+                except Exception as e:
+                    print(f"Error executing macro: {e}", file=sys.stderr)
+            print(f"Loaded {loaded} macros from macros.sql", file=sys.stderr)
 
-    # 4. Create extension info table
+    # 5. Register Python UDFs
+    try:
+        from .udfs import register_udfs
+
+        registered = register_udfs(con)
+        print(f"Registered {len(registered)} UDFs: {', '.join(registered)}", file=sys.stderr)
+    except ImportError:
+        print("UDFs module not available, skipping", file=sys.stderr)
+    except Exception as e:
+        print(f"Error registering UDFs: {e}", file=sys.stderr)
+
+    # 6. Create extension info table
     con.sql(f"""
         CREATE OR REPLACE TABLE loaded_extensions AS
         SELECT unnest({loaded_extensions!r}::VARCHAR[]) as extension_name
     """)
 
-    # 5. Start MCP Server
+    # 7. Start MCP Server
     print("Starting MCP Server...", file=sys.stderr)
     try:
         con.sql("SELECT mcp_server_start('stdio', 'localhost', 0, '{}')")

@@ -1089,7 +1089,7 @@ CREATE OR REPLACE MACRO ops_open_terminal(session_id_param, cwd, output_lines) A
 -- APPROVAL FLOW TOOLS (Cross-Org)
 -- =============================================================================
 
-CREATE OR REPLACE MACRO request_approval(session_id_param, title, description, details_json, risk_percent) AS (
+CREATE OR REPLACE MACRO open_approval_ui(session_id_param, title, description, details_json, risk_percent) AS (
     SELECT open_app('app.approval', session_id_param, json_object(
         'title', title,
         'description', description,
@@ -1220,4 +1220,126 @@ CREATE OR REPLACE MACRO studio_image_preview(session_id_param, image_url, prompt
             json_object('id', 'quality', 'label', '80%', 'icon', '⚙', 'color', 'cyan')
         )
     ))
+);
+
+-- =============================================================================
+-- BRIDGE MACROS: App ↔ Agent Loop Integration
+-- =============================================================================
+
+-- Process app result and feed back to agent
+CREATE OR REPLACE MACRO process_app_result(instance_id_param) AS (
+    SELECT json_object(
+        'instance_id', i.instance_id,
+        'app_id', i.app_id,
+        'app_type', a.app_type,
+        'input', i.input_data,
+        'output', i.output_data,
+        'status', i.status,
+        'duration_ms', epoch_ms(i.completed_at) - epoch_ms(i.created_at)
+    )
+    FROM mcp_app_instances i
+    JOIN mcp_apps a ON i.app_id = a.id
+    WHERE i.instance_id = instance_id_param
+);
+
+-- Apply model selection from model-selector app
+CREATE OR REPLACE MACRO apply_model_selection(agent_id_param, instance_id_param) AS (
+    WITH selection AS (
+        SELECT
+            json_extract_string(output_data, '$.model_id') as model_id,
+            json_extract_string(output_data, '$.prompt') as user_prompt
+        FROM mcp_app_instances WHERE instance_id = instance_id_param
+    )
+    UPDATE agent_config
+    SET model_name = (SELECT model_id FROM selection),
+        updated_at = now()
+    WHERE id = agent_id_param
+    RETURNING json_object(
+        'agent_id', id,
+        'new_model', model_name,
+        'prompt', (SELECT user_prompt FROM selection)
+    )
+);
+
+-- Resolve pending approval (from approval-flow app)
+CREATE OR REPLACE MACRO resolve_approval(approval_id_param, decision_param, resolved_by_param) AS (
+    UPDATE pending_approvals
+    SET status = decision_param,
+        resolved_at = now(),
+        resolved_by = resolved_by_param
+    WHERE id = approval_id_param
+    RETURNING json_object(
+        'approval_id', id,
+        'tool_name', tool_name,
+        'decision', status,
+        'resolved_by', resolved_by
+    )
+);
+
+-- Get pending approvals for session
+CREATE OR REPLACE MACRO get_pending_approvals(session_id_param) AS (
+    SELECT json_group_array(json_object(
+        'id', id,
+        'tool_name', tool_name,
+        'params', tool_params,
+        'reason', reason,
+        'created_at', created_at::VARCHAR
+    ))
+    FROM pending_approvals
+    WHERE session_id = session_id_param AND status = 'pending'
+);
+
+-- Create approval request and open UI
+CREATE OR REPLACE MACRO request_tool_approval(session_id_param, agent_id_param, tool_name_param, tool_params_param, reason_param) AS (
+    WITH inserted AS (
+        INSERT INTO pending_approvals (session_id, agent_id, tool_name, tool_params, reason)
+        VALUES (session_id_param, agent_id_param, tool_name_param, tool_params_param::JSON, reason_param)
+        RETURNING id
+    )
+    SELECT open_approval_ui(
+        session_id_param,
+        'Genehmigung erforderlich: ' || tool_name_param,
+        reason_param,
+        json_array(
+            json_object('label', 'Tool', 'value', tool_name_param),
+            json_object('label', 'Agent', 'value', agent_id_param),
+            json_object('label', 'Session', 'value', session_id_param)
+        ),
+        CASE
+            WHEN tool_name_param IN ('shell_run', 'fs_delete', 'deploy_service') THEN 80
+            WHEN tool_name_param IN ('fs_write', 'rollback_service') THEN 50
+            ELSE 30
+        END
+    )
+);
+
+-- =============================================================================
+-- UNIFIED TOOL EXECUTION WITH APP UI
+-- =============================================================================
+
+-- Execute tool with automatic UI for approvals/choices
+CREATE OR REPLACE MACRO smart_execute_tool(org_id_param, session_id_param, tool_name_param, tool_params_param) AS (
+    WITH policy AS (
+        SELECT org_can_execute(org_id_param, tool_name_param, tool_params_param) as check
+    )
+    SELECT CASE
+        -- Denied by policy
+        WHEN NOT json_extract(policy.check, '$.allowed')::BOOLEAN
+            THEN json_object(
+                'status', 'denied',
+                'reason', json_extract_string(policy.check, '$.reason')
+            )
+        -- Needs approval → open approval UI
+        WHEN json_extract(policy.check, '$.requires_approval')::BOOLEAN
+            THEN request_tool_approval(
+                session_id_param,
+                org_id_param,
+                tool_name_param,
+                tool_params_param,
+                'Dieses Tool benötigt Genehmigung'
+            )
+        -- Execute normally
+        ELSE execute_org_tool(org_id_param, session_id_param, tool_name_param, tool_params_param)
+    END
+    FROM policy
 );

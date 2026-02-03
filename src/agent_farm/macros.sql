@@ -549,3 +549,611 @@ CREATE OR REPLACE MACRO embed(text_input) AS (
 CREATE OR REPLACE MACRO semantic_score(query_text, doc_text) AS (
     cosine_sim(embed(query_text), embed(doc_text))
 );
+
+-- =============================================================================
+-- SECURE DESKTOP AGENT - POLICY & SECURITY MACROS
+-- =============================================================================
+
+-- Check if path is within allowed workspace
+CREATE OR REPLACE MACRO path_in_workspace(check_path, workspace_path) AS (
+    starts_with(check_path, workspace_path) OR
+    starts_with(check_path, workspace_path || '/')
+);
+
+-- Check path against workspace table
+CREATE OR REPLACE MACRO is_allowed_path(agent_id_param, check_path) AS (
+    EXISTS (
+        SELECT 1 FROM workspaces
+        WHERE agent_id = agent_id_param
+        AND path_in_workspace(check_path, path)
+    )
+);
+
+-- Get workspace mode for a path
+CREATE OR REPLACE MACRO get_workspace_mode(agent_id_param, check_path) AS (
+    SELECT mode FROM workspaces
+    WHERE agent_id = agent_id_param
+    AND path_in_workspace(check_path, path)
+    LIMIT 1
+);
+
+-- Check if shell is enabled for agent
+CREATE OR REPLACE MACRO is_shell_enabled(agent_id_param) AS (
+    SELECT COALESCE(shell_enabled, FALSE)
+    FROM security_policy
+    WHERE agent_id = agent_id_param
+);
+
+-- Check if command is in blocklist
+CREATE OR REPLACE MACRO is_blocked_command(agent_id_param, cmd) AS (
+    SELECT EXISTS (
+        SELECT 1 FROM security_policy
+        CROSS JOIN LATERAL unnest(shell_blocklist) AS t(blocked)
+        WHERE agent_id = agent_id_param
+        AND lower(cmd) LIKE '%' || lower(blocked) || '%'
+    )
+);
+
+-- Check if file matches sensitive patterns
+CREATE OR REPLACE MACRO is_sensitive_file(agent_id_param, file_path) AS (
+    SELECT EXISTS (
+        SELECT 1 FROM security_policy
+        CROSS JOIN LATERAL unnest(sensitive_patterns) AS t(pattern)
+        WHERE agent_id = agent_id_param
+        AND glob(file_path, pattern)
+    )
+);
+
+-- Check domain against allowed/blocked lists
+CREATE OR REPLACE MACRO is_allowed_domain(agent_id_param, domain) AS (
+    SELECT CASE
+        WHEN EXISTS (
+            SELECT 1 FROM security_policy
+            CROSS JOIN LATERAL unnest(blocked_domains) AS t(blocked)
+            WHERE agent_id = agent_id_param AND domain LIKE '%' || blocked
+        ) THEN FALSE
+        WHEN (SELECT allowed_domains FROM security_policy WHERE agent_id = agent_id_param) IS NULL THEN TRUE
+        WHEN (SELECT len(allowed_domains) FROM security_policy WHERE agent_id = agent_id_param) = 0 THEN TRUE
+        WHEN EXISTS (
+            SELECT 1 FROM security_policy
+            CROSS JOIN LATERAL unnest(allowed_domains) AS t(allowed)
+            WHERE agent_id = agent_id_param AND domain LIKE '%' || allowed
+        ) THEN TRUE
+        ELSE FALSE
+    END
+);
+
+-- =============================================================================
+-- AUDIT LOGGING MACROS
+-- =============================================================================
+
+-- Log a tool call
+CREATE OR REPLACE MACRO log_tool_call(session_id_param, tool_name_param, params_json, result_json, decision_param) AS (
+    INSERT INTO audit_log (session_id, entry_type, tool_name, parameters, result, decision)
+    VALUES (session_id_param, 'tool_call', tool_name_param, params_json::JSON, result_json::JSON, decision_param)
+    RETURNING id
+);
+
+-- Log a policy violation
+CREATE OR REPLACE MACRO log_violation(session_id_param, tool_name_param, violations_array) AS (
+    INSERT INTO audit_log (session_id, entry_type, tool_name, decision, violations)
+    VALUES (session_id_param, 'violation', tool_name_param, 'deny', violations_array)
+    RETURNING id
+);
+
+-- Get recent audit entries
+CREATE OR REPLACE MACRO recent_audit(session_id_param, limit_n) AS TABLE
+    SELECT * FROM audit_log
+    WHERE session_id = session_id_param
+    ORDER BY timestamp DESC
+    LIMIT limit_n;
+
+-- =============================================================================
+-- SECURE FILE OPERATIONS
+-- =============================================================================
+
+-- Secure file read - checks workspace first
+CREATE OR REPLACE MACRO secure_read(agent_id_param, file_path) AS (
+    CASE
+        WHEN NOT is_allowed_path(agent_id_param, file_path)
+            THEN json_object('error', 'Path not in allowed workspace', 'path', file_path)
+        WHEN is_sensitive_file(agent_id_param, file_path)
+            THEN json_object('error', 'Sensitive file - approval required', 'path', file_path)
+        ELSE json_object('content', read_file(file_path), 'path', file_path)
+    END
+);
+
+-- Secure directory listing
+CREATE OR REPLACE MACRO secure_ls(agent_id_param, dir_path) AS (
+    CASE
+        WHEN NOT is_allowed_path(agent_id_param, dir_path)
+            THEN json_object('error', 'Path not in allowed workspace', 'path', dir_path)
+        ELSE json_object('listing', ls(dir_path), 'path', dir_path)
+    END
+);
+
+-- Secure shell - checks policy and blocklist
+CREATE OR REPLACE MACRO secure_shell(agent_id_param, cmd) AS (
+    CASE
+        WHEN NOT is_shell_enabled(agent_id_param)
+            THEN json_object('error', 'Shell disabled for this security profile')
+        WHEN is_blocked_command(agent_id_param, cmd)
+            THEN json_object('error', 'Command blocked by security policy', 'cmd', cmd)
+        ELSE json_object('output', shell(cmd), 'cmd', cmd)
+    END
+);
+
+-- =============================================================================
+-- AGENT CONFIG HELPERS
+-- =============================================================================
+
+-- Create new agent with default config
+CREATE OR REPLACE MACRO create_agent(agent_id_param, agent_name, agent_role, sec_profile) AS (
+    INSERT INTO agent_config (id, name, role, security_profile)
+    VALUES (agent_id_param, agent_name, agent_role, sec_profile)
+    RETURNING *
+);
+
+-- Add workspace to agent
+CREATE OR REPLACE MACRO add_workspace(ws_id, agent_id_param, ws_path, ws_name, ws_mode) AS (
+    INSERT INTO workspaces (id, agent_id, path, name, mode)
+    VALUES (ws_id, agent_id_param, ws_path, ws_name, ws_mode)
+    RETURNING *
+);
+
+-- Initialize security policy for agent
+CREATE OR REPLACE MACRO init_security_policy(agent_id_param, shell_on, allowlist, blocklist) AS (
+    INSERT INTO security_policy (agent_id, shell_enabled, shell_allowlist, shell_blocklist)
+    VALUES (agent_id_param, shell_on, allowlist, blocklist)
+    ON CONFLICT (agent_id) DO UPDATE SET
+        shell_enabled = shell_on,
+        shell_allowlist = allowlist,
+        shell_blocklist = blocklist
+    RETURNING *
+);
+
+-- Get agent config as JSON
+CREATE OR REPLACE MACRO get_agent_config(agent_id_param) AS (
+    SELECT json_object(
+        'agent', (SELECT to_json(a) FROM agent_config a WHERE id = agent_id_param),
+        'workspaces', (SELECT json_group_array(to_json(w)) FROM workspaces w WHERE agent_id = agent_id_param),
+        'security', (SELECT to_json(s) FROM security_policy s WHERE agent_id = agent_id_param),
+        'mcp_servers', (SELECT json_group_array(to_json(m)) FROM agent_mcp_servers m WHERE agent_id = agent_id_param)
+    )
+);
+
+-- =============================================================================
+-- SECURE AGENT LOOP
+-- =============================================================================
+
+-- Build system prompt with security rules
+CREATE OR REPLACE MACRO agent_system_prompt(agent_id_param) AS (
+    SELECT
+        'You are ' || name || ', a ' || role || ' assistant.' || chr(10) ||
+        'Security Profile: ' || security_profile || chr(10) ||
+        'Allowed Workspaces: ' || (
+            SELECT string_agg(path, ', ')
+            FROM workspaces WHERE agent_id = agent_id_param
+        ) || chr(10) ||
+        CASE WHEN (SELECT shell_enabled FROM security_policy WHERE agent_id = agent_id_param)
+            THEN 'Shell: ENABLED (use with caution)'
+            ELSE 'Shell: DISABLED'
+        END || chr(10) ||
+        'Rules: Only access allowed paths. Request approval for destructive operations.'
+    FROM agent_config WHERE id = agent_id_param
+);
+
+-- Secure agent call - wraps agent_call with policy context
+CREATE OR REPLACE MACRO secure_agent_call(agent_id_param, model_name, user_prompt, tools_json) AS (
+    SELECT agent_call(
+        model_name,
+        agent_system_prompt(agent_id_param),
+        user_prompt,
+        tools_json
+    )
+);
+
+-- Define local tools for agent (fs_read, fs_write, fs_list, shell_run, web_search)
+CREATE OR REPLACE MACRO local_tools_schema() AS (
+    SELECT json_array(
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'fs_read',
+                'description', 'Read file contents. Path must be in allowed workspace.',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('path', json_object('type', 'string', 'description', 'File path')),
+                    'required', json_array('path')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'fs_list',
+                'description', 'List directory contents. Path must be in allowed workspace.',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('path', json_object('type', 'string', 'description', 'Directory path')),
+                    'required', json_array('path')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'shell_run',
+                'description', 'Execute shell command. Only available in power profile.',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('cmd', json_object('type', 'string', 'description', 'Command to run')),
+                    'required', json_array('cmd')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'web_search',
+                'description', 'Search the web using DuckDuckGo.',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('query', json_object('type', 'string', 'description', 'Search query')),
+                    'required', json_array('query')
+                )
+            )
+        )
+    )
+);
+
+-- Execute tool call with policy checks
+CREATE OR REPLACE MACRO execute_tool(agent_id_param, session_id_param, tool_name, tool_params) AS (
+    SELECT CASE tool_name
+        WHEN 'fs_read' THEN secure_read(agent_id_param, json_extract_string(tool_params, '$.path'))
+        WHEN 'fs_list' THEN secure_ls(agent_id_param, json_extract_string(tool_params, '$.path'))
+        WHEN 'shell_run' THEN secure_shell(agent_id_param, json_extract_string(tool_params, '$.cmd'))
+        WHEN 'web_search' THEN json_object('results', ddg_instant(json_extract_string(tool_params, '$.query')))
+        ELSE json_object('error', 'Unknown tool', 'tool', tool_name)
+    END
+);
+
+-- =============================================================================
+-- ANTHROPIC API COMPATIBILITY (for Claude Cloud mode)
+-- =============================================================================
+
+-- Anthropic base URL (set via env or default)
+CREATE OR REPLACE MACRO anthropic_base() AS
+    COALESCE(getenv('ANTHROPIC_BASE_URL'), 'https://api.anthropic.com');
+
+-- Anthropic chat completion
+CREATE OR REPLACE MACRO anthropic_chat(model_name, messages_json, max_tokens) AS (
+    SELECT http_post(
+        anthropic_base() || '/v1/messages',
+        headers := MAP {
+            'Content-Type': 'application/json',
+            'x-api-key': COALESCE(getenv('ANTHROPIC_API_KEY'), ''),
+            'anthropic-version': '2023-06-01'
+        },
+        body := json_object(
+            'model', model_name,
+            'messages', json(messages_json),
+            'max_tokens', max_tokens
+        )
+    ).body
+);
+
+-- Anthropic chat with tools
+CREATE OR REPLACE MACRO anthropic_chat_tools(model_name, messages_json, tools_json, max_tokens) AS (
+    SELECT http_post(
+        anthropic_base() || '/v1/messages',
+        headers := MAP {
+            'Content-Type': 'application/json',
+            'x-api-key': COALESCE(getenv('ANTHROPIC_API_KEY'), ''),
+            'anthropic-version': '2023-06-01'
+        },
+        body := json_object(
+            'model', model_name,
+            'messages', json(messages_json),
+            'tools', json(tools_json),
+            'max_tokens', max_tokens
+        )
+    ).body
+);
+
+-- Unified model call - routes to Ollama or Anthropic based on config
+CREATE OR REPLACE MACRO model_call(agent_id_param, user_prompt, tools_json) AS (
+    SELECT CASE
+        WHEN (SELECT model_backend FROM agent_config WHERE id = agent_id_param) = 'claude_cloud'
+        THEN anthropic_chat_tools(
+            (SELECT model_name FROM agent_config WHERE id = agent_id_param),
+            json_array(json_object('role', 'user', 'content', user_prompt)),
+            tools_json,
+            4096
+        )
+        ELSE ollama_chat_with_tools(
+            (SELECT model_name FROM agent_config WHERE id = agent_id_param),
+            json_array(json_object('role', 'user', 'content', user_prompt)),
+            tools_json
+        )
+    END
+);
+
+-- =============================================================================
+-- SECURE FILE WRITE (FR-7: fs_write)
+-- =============================================================================
+
+-- Check if write is allowed for workspace mode
+CREATE OR REPLACE MACRO can_write_to_workspace(agent_id_param, file_path) AS (
+    SELECT COALESCE(
+        (SELECT mode IN ('writer', 'operator')
+         FROM workspaces
+         WHERE agent_id = agent_id_param
+         AND path_in_workspace(file_path, path)
+         LIMIT 1),
+        FALSE
+    )
+);
+
+-- Secure file write with policy checks
+CREATE OR REPLACE MACRO secure_write(agent_id_param, file_path, content) AS (
+    CASE
+        WHEN NOT is_allowed_path(agent_id_param, file_path)
+            THEN json_object('error', 'Path not in allowed workspace', 'path', file_path, 'status', 'denied')
+        WHEN NOT can_write_to_workspace(agent_id_param, file_path)
+            THEN json_object('error', 'Workspace is read-only', 'path', file_path, 'status', 'denied')
+        WHEN is_sensitive_file(agent_id_param, file_path)
+            THEN json_object('error', 'Writing to sensitive file requires approval', 'path', file_path, 'status', 'approval_required')
+        ELSE json_object('written', length(content), 'path', file_path, 'status', 'success')
+    END
+);
+
+-- =============================================================================
+-- APPROVAL FLOW (SR-6.5, FR-14)
+-- =============================================================================
+
+-- Pending approvals table (tracks tool calls awaiting user approval)
+-- Note: This table should be created in main.py initialization
+
+-- Check if action requires approval based on tool and params
+CREATE OR REPLACE MACRO requires_approval(agent_id_param, tool_name, tool_params) AS (
+    SELECT CASE
+        -- Shell always requires approval
+        WHEN tool_name = 'shell_run' THEN TRUE
+        -- Write to sensitive files
+        WHEN tool_name = 'fs_write' AND is_sensitive_file(agent_id_param, json_extract_string(tool_params, '$.path')) THEN TRUE
+        -- Delete operations (if we had them)
+        WHEN tool_name = 'fs_delete' THEN TRUE
+        -- Standard profile requires approval for writes
+        WHEN tool_name = 'fs_write' AND (SELECT security_profile FROM agent_config WHERE id = agent_id_param) = 'standard' THEN TRUE
+        ELSE FALSE
+    END
+);
+
+-- Create approval request
+CREATE OR REPLACE MACRO request_approval(session_id_param, tool_name, tool_params, reason) AS (
+    INSERT INTO audit_log (session_id, entry_type, tool_name, parameters, decision)
+    VALUES (session_id_param, 'approval_request', tool_name, tool_params::JSON, 'pending')
+    RETURNING id, 'approval_required' as status, reason as message
+);
+
+-- =============================================================================
+-- PROMPT INJECTION DETECTION (SR-7, SR-8)
+-- =============================================================================
+
+-- Check for common injection patterns in content
+CREATE OR REPLACE MACRO detect_injection(content) AS (
+    SELECT CASE
+        WHEN lower(content) LIKE '%ignore%previous%instruction%' THEN 'instruction_override'
+        WHEN lower(content) LIKE '%ignore%all%prior%' THEN 'instruction_override'
+        WHEN lower(content) LIKE '%disregard%above%' THEN 'instruction_override'
+        WHEN lower(content) LIKE '%forget%everything%' THEN 'instruction_override'
+        WHEN lower(content) LIKE '%you are now%' THEN 'role_hijack'
+        WHEN lower(content) LIKE '%new instructions:%' THEN 'instruction_injection'
+        WHEN lower(content) LIKE '%system:%' THEN 'system_injection'
+        WHEN lower(content) LIKE '%[system]%' THEN 'system_injection'
+        WHEN lower(content) LIKE '%</system>%' THEN 'xml_injection'
+        WHEN lower(content) LIKE '%<instruction>%' THEN 'xml_injection'
+        WHEN lower(content) LIKE '%admin mode%' THEN 'privilege_escalation'
+        WHEN lower(content) LIKE '%developer mode%' THEN 'privilege_escalation'
+        WHEN lower(content) LIKE '%jailbreak%' THEN 'jailbreak'
+        ELSE NULL
+    END
+);
+
+-- Scan file content for injection before processing
+CREATE OR REPLACE MACRO safe_read_content(agent_id_param, file_path) AS (
+    SELECT CASE
+        WHEN NOT is_allowed_path(agent_id_param, file_path)
+            THEN json_object('error', 'Path not allowed', 'content', NULL)
+        WHEN detect_injection(read_file(file_path)) IS NOT NULL
+            THEN json_object(
+                'warning', 'Potential prompt injection detected',
+                'type', detect_injection(read_file(file_path)),
+                'content', read_file(file_path),
+                'sanitized', TRUE
+            )
+        ELSE json_object('content', read_file(file_path), 'sanitized', FALSE)
+    END
+);
+
+-- =============================================================================
+-- AGENT HARNESS / LOOP (FR-6)
+-- =============================================================================
+
+-- Updated tool execution with approval check
+CREATE OR REPLACE MACRO execute_tool_safe(agent_id_param, session_id_param, tool_name, tool_params) AS (
+    SELECT CASE
+        -- Check approval requirement first
+        WHEN requires_approval(agent_id_param, tool_name, tool_params)
+            THEN json_object(
+                'status', 'approval_required',
+                'tool', tool_name,
+                'params', tool_params,
+                'message', 'This action requires user approval'
+            )
+        -- Execute tools
+        WHEN tool_name = 'fs_read' THEN secure_read(agent_id_param, json_extract_string(tool_params, '$.path'))
+        WHEN tool_name = 'fs_write' THEN secure_write(
+            agent_id_param,
+            json_extract_string(tool_params, '$.path'),
+            json_extract_string(tool_params, '$.content')
+        )
+        WHEN tool_name = 'fs_list' THEN secure_ls(agent_id_param, json_extract_string(tool_params, '$.path'))
+        WHEN tool_name = 'shell_run' THEN secure_shell(agent_id_param, json_extract_string(tool_params, '$.cmd'))
+        WHEN tool_name = 'web_search' THEN json_object('results', ddg_instant(json_extract_string(tool_params, '$.query')))
+        ELSE json_object('error', 'Unknown tool', 'tool', tool_name)
+    END
+);
+
+-- Process single tool call from LLM response
+CREATE OR REPLACE MACRO process_tool_call(agent_id_param, session_id_param, tool_call_json) AS (
+    WITH tool_info AS (
+        SELECT
+            json_extract_string(tool_call_json, '$.function.name') as tool_name,
+            json_extract_string(tool_call_json, '$.function.arguments') as tool_params
+    )
+    SELECT execute_tool_safe(agent_id_param, session_id_param, tool_name, tool_params)
+    FROM tool_info
+);
+
+-- Full local tools schema including fs_write
+CREATE OR REPLACE MACRO agent_tools_schema() AS (
+    SELECT json_array(
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'fs_read',
+                'description', 'Read file contents from allowed workspace',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('path', json_object('type', 'string')),
+                    'required', json_array('path')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'fs_write',
+                'description', 'Write content to file in allowed workspace (requires writer/operator mode)',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object(
+                        'path', json_object('type', 'string'),
+                        'content', json_object('type', 'string')
+                    ),
+                    'required', json_array('path', 'content')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'fs_list',
+                'description', 'List directory contents in allowed workspace',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('path', json_object('type', 'string')),
+                    'required', json_array('path')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'shell_run',
+                'description', 'Run shell command (power profile only, requires approval)',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('cmd', json_object('type', 'string')),
+                    'required', json_array('cmd')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'web_search',
+                'description', 'Search the web via DuckDuckGo',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('query', json_object('type', 'string')),
+                    'required', json_array('query')
+                )
+            )
+        ),
+        json_object(
+            'type', 'function',
+            'function', json_object(
+                'name', 'task_complete',
+                'description', 'Mark task as complete with final response',
+                'parameters', json_object(
+                    'type', 'object',
+                    'properties', json_object('result', json_object('type', 'string')),
+                    'required', json_array('result')
+                )
+            )
+        )
+    )
+);
+
+-- =============================================================================
+-- AGENT STEP FUNCTION (single iteration of agent loop)
+-- =============================================================================
+
+-- Execute one step of agent loop: call model, process tool calls
+-- Returns: {status: 'continue'|'complete'|'approval_required', ...}
+CREATE OR REPLACE MACRO agent_step(agent_id_param, session_id_param, messages_json) AS (
+    WITH model_response AS (
+        SELECT CASE
+            WHEN (SELECT model_backend FROM agent_config WHERE id = agent_id_param) = 'claude_cloud'
+            THEN anthropic_chat_tools(
+                (SELECT model_name FROM agent_config WHERE id = agent_id_param),
+                messages_json,
+                agent_tools_schema(),
+                4096
+            )
+            ELSE ollama_chat_with_tools(
+                (SELECT model_name FROM agent_config WHERE id = agent_id_param),
+                messages_json,
+                agent_tools_schema()
+            )
+        END as response
+    ),
+    parsed AS (
+        SELECT
+            response,
+            has_tool_calls(response) as has_tools,
+            extract_tool_calls(response) as tool_calls,
+            extract_response(response) as text_response
+        FROM model_response
+    )
+    SELECT json_object(
+        'status', CASE
+            WHEN has_tools AND json_extract_string(tool_calls, '$[0].function.name') = 'task_complete' THEN 'complete'
+            WHEN has_tools THEN 'continue'
+            ELSE 'complete'
+        END,
+        'response', text_response,
+        'tool_calls', tool_calls,
+        'raw', response
+    )
+    FROM parsed
+);
+
+-- =============================================================================
+-- CONVENIENCE: Quick agent run (single turn)
+-- =============================================================================
+
+-- Simple one-shot agent call for quick tasks
+CREATE OR REPLACE MACRO quick_agent(agent_id_param, user_prompt) AS (
+    SELECT agent_step(
+        agent_id_param,
+        'quick-' || now()::VARCHAR,
+        json_array(
+            json_object('role', 'system', 'content', agent_system_prompt(agent_id_param)),
+            json_object('role', 'user', 'content', user_prompt)
+        )
+    )
+);

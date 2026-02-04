@@ -99,6 +99,14 @@ class SpecEngine:
                     else:
                         print(f"Spec Engine: Optional extension {ext} skipped: {e}", file=sys.stderr)
 
+    def _has_non_comment_content(self, stmt: str) -> bool:
+        """Check if a SQL statement has any non-comment content."""
+        for ln in stmt.split("\n"):
+            ln = ln.strip()
+            if ln and not ln.startswith("--"):
+                return True
+        return False
+
     def _load_sql_file(self, filepath: str) -> int:
         """Load and execute a SQL file, returning number of statements executed."""
         if not os.path.exists(filepath):
@@ -114,7 +122,8 @@ class SpecEngine:
 
         for stmt in statements:
             stmt = stmt.strip()
-            if not stmt or stmt.startswith("--"):
+            # Check for non-comment content (handles statements starting with comments)
+            if not self._has_non_comment_content(stmt):
                 continue
             try:
                 self.con.sql(stmt)
@@ -580,6 +589,180 @@ class SpecEngine:
             return False
 
     # =========================================================================
+    # CRUD Operations
+    # =========================================================================
+
+    def spec_create(
+        self,
+        kind: str,
+        name: str,
+        summary: str,
+        version: str = "1.0.0",
+        status: str = "draft",
+        doc: str | None = None,
+        payload: dict[str, Any] | None = None,
+        schema_ref: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Create a new spec.
+
+        Args:
+            kind: Spec kind (agent, skill, api, etc.)
+            name: Spec name
+            summary: Brief description
+            version: Version string (default: 1.0.0)
+            status: Status (draft, active, deprecated)
+            doc: Optional documentation (markdown)
+            payload: Optional JSON payload
+            schema_ref: Optional reference to a schema for validation
+
+        Returns:
+            Dict with created spec id or error
+        """
+        try:
+            # Get next ID
+            next_id = self.con.execute(
+                "SELECT COALESCE(MAX(id), 0) + 1 FROM spec_objects"
+            ).fetchone()[0]
+
+            # Insert spec object
+            self.con.execute(
+                """
+                INSERT INTO spec_objects (id, kind, name, version, status, summary)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [next_id, kind, name, version, status, summary]
+            )
+
+            # Insert doc if provided
+            if doc:
+                doc_id = self.con.execute(
+                    "SELECT COALESCE(MAX(id), 0) + 1 FROM spec_docs"
+                ).fetchone()[0]
+                self.con.execute(
+                    "INSERT INTO spec_docs (id, object_id, doc) VALUES (?, ?, ?)",
+                    [doc_id, next_id, doc]
+                )
+
+            # Insert payload if provided
+            if payload is not None:
+                payload_id = self.con.execute(
+                    "SELECT COALESCE(MAX(id), 0) + 1 FROM spec_payloads"
+                ).fetchone()[0]
+                payload_json = json.dumps(payload) if isinstance(payload, dict) else payload
+                self.con.execute(
+                    "INSERT INTO spec_payloads (id, object_id, payload, schema_ref) VALUES (?, ?, ?, ?)",
+                    [payload_id, next_id, payload_json, schema_ref]
+                )
+
+            return {"id": next_id, "created": True}
+
+        except Exception as e:
+            return {"error": str(e), "created": False}
+
+    def spec_update(
+        self,
+        id: int,
+        status: str | None = None,
+        summary: str | None = None,
+        doc: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Update an existing spec.
+
+        Args:
+            id: Spec ID to update
+            status: New status (optional)
+            summary: New summary (optional)
+            doc: New documentation (optional)
+            payload: New payload (optional)
+
+        Returns:
+            Dict with success status or error
+        """
+        try:
+            updates = []
+            params = []
+
+            if status:
+                updates.append("status = ?")
+                params.append(status)
+            if summary:
+                updates.append("summary = ?")
+                params.append(summary)
+
+            if updates:
+                updates.append("updated_at = current_timestamp")
+                params.append(id)
+                self.con.execute(
+                    f"UPDATE spec_objects SET {', '.join(updates)} WHERE id = ?",
+                    params
+                )
+
+            if doc is not None:
+                # Update or insert doc
+                existing = self.con.execute(
+                    "SELECT id FROM spec_docs WHERE object_id = ?", [id]
+                ).fetchone()
+                if existing:
+                    self.con.execute(
+                        "UPDATE spec_docs SET doc = ? WHERE object_id = ?",
+                        [doc, id]
+                    )
+                else:
+                    doc_id = self.con.execute(
+                        "SELECT COALESCE(MAX(id), 0) + 1 FROM spec_docs"
+                    ).fetchone()[0]
+                    self.con.execute(
+                        "INSERT INTO spec_docs (id, object_id, doc) VALUES (?, ?, ?)",
+                        [doc_id, id, doc]
+                    )
+
+            if payload is not None:
+                payload_json = json.dumps(payload) if isinstance(payload, dict) else payload
+                existing = self.con.execute(
+                    "SELECT id FROM spec_payloads WHERE object_id = ?", [id]
+                ).fetchone()
+                if existing:
+                    self.con.execute(
+                        "UPDATE spec_payloads SET payload = ? WHERE object_id = ?",
+                        [payload_json, id]
+                    )
+                else:
+                    payload_id = self.con.execute(
+                        "SELECT COALESCE(MAX(id), 0) + 1 FROM spec_payloads"
+                    ).fetchone()[0]
+                    self.con.execute(
+                        "INSERT INTO spec_payloads (id, object_id, payload) VALUES (?, ?, ?)",
+                        [payload_id, id, payload_json]
+                    )
+
+            return {"updated": True}
+
+        except Exception as e:
+            return {"error": str(e), "updated": False}
+
+    def spec_delete(self, id: int) -> dict[str, Any]:
+        """
+        Delete a spec by ID.
+
+        Args:
+            id: Spec ID to delete
+
+        Returns:
+            Dict with success status or error
+        """
+        try:
+            # Delete related records first (no foreign key cascade in our schema)
+            self.con.execute("DELETE FROM spec_docs WHERE object_id = ?", [id])
+            self.con.execute("DELETE FROM spec_payloads WHERE object_id = ?", [id])
+            self.con.execute("DELETE FROM spec_objects WHERE id = ?", [id])
+            return {"deleted": True}
+        except Exception as e:
+            return {"error": str(e), "deleted": False}
+
+    # =========================================================================
     # Utility Methods
     # =========================================================================
 
@@ -609,6 +792,31 @@ class SpecEngine:
             return {"specs_by_kind": stats}
         except Exception as e:
             return {"error": str(e)}
+
+    def get_loaded_extensions(self) -> list[str]:
+        """Get list of loaded DuckDB extensions."""
+        try:
+            result = self.con.execute(
+                "SELECT extension_name FROM duckdb_extensions() WHERE loaded = true"
+            ).fetchall()
+            return [row[0] for row in result]
+        except Exception as e:
+            print(f"Spec Engine: Error getting extensions: {e}", file=sys.stderr)
+            return []
+
+    def get_spec_kinds(self) -> list[str]:
+        """Get list of all spec kinds in use."""
+        try:
+            result = self.con.execute(
+                "SELECT DISTINCT kind FROM spec_objects ORDER BY kind"
+            ).fetchall()
+            return [row[0] for row in result]
+        except Exception as e:
+            return []
+
+    def is_initialized(self) -> bool:
+        """Check if the Spec Engine is initialized."""
+        return self._initialized
 
 
 # Global spec engine instance

@@ -1,3 +1,17 @@
+"""
+Agent Farm MCP Server - DuckDB-powered Spec Engine
+
+The Agent Farm uses a DuckDB-based Spec Engine as the central "Spec-OS" for all agents.
+The Spec Engine manages specifications for:
+- Agents, skills, workflows
+- APIs/protocols (HTTP/MCP/OpenAPI/GraphQL)
+- JSON Schemas for validation
+- Prompt/plan templates (MiniJinja)
+- Task templates, UIs, Open-Responses
+
+Entry point for the MCP server.
+"""
+
 import json
 import os
 import sys
@@ -6,7 +20,7 @@ from pathlib import Path
 import duckdb
 
 
-def split_sql_statements(sql_content):
+def split_sql_statements(sql_content: str) -> list[str]:
     """Split SQL content into statements, respecting string literals."""
     statements = []
     current = []
@@ -47,7 +61,7 @@ def split_sql_statements(sql_content):
     return statements
 
 
-def find_mcp_config():
+def find_mcp_config() -> list[tuple[str, dict]]:
     """
     Discover MCP configuration files in standard locations.
     Returns list of (config_path, config_data) tuples.
@@ -81,7 +95,7 @@ def find_mcp_config():
     return found_configs
 
 
-def extract_mcp_servers(configs):
+def extract_mcp_servers(configs: list[tuple[str, dict]]) -> dict:
     """
     Extract MCP server definitions from config files.
     Returns dict of server_name -> server_config
@@ -99,11 +113,10 @@ def extract_mcp_servers(configs):
     return servers
 
 
-def setup_mcp_tables(con, servers):
+def setup_mcp_tables(con: duckdb.DuckDBPyConnection, servers: dict) -> None:
     """
     Create tables with discovered MCP server info for SQL access.
     """
-    # Create table for MCP servers
     con.sql("""
         CREATE OR REPLACE TABLE mcp_servers (
             name VARCHAR,
@@ -121,89 +134,78 @@ def setup_mcp_tables(con, servers):
         source = config.get("source", "")
 
         con.execute(
-            """
-            INSERT INTO mcp_servers VALUES (?, ?, ?, ?, ?)
-        """,
+            "INSERT INTO mcp_servers VALUES (?, ?, ?, ?, ?)",
             [name, command, args, env, source],
         )
 
     print(f"Registered {len(servers)} MCP servers in mcp_servers table", file=sys.stderr)
 
 
-def main():
-    # Initialize DuckDB connection
-    con = duckdb.connect(database=":memory:")
-
-    print("Initializing queries...", file=sys.stderr)
-
-    # 1. Install & Load Extensions
+def load_core_extensions(con: duckdb.DuckDBPyConnection) -> list[str]:
+    """
+    Load core DuckDB extensions required for the Agent Farm.
+    Returns list of successfully loaded extensions.
+    """
+    # Extensions in priority order
+    # Required extensions are loaded first, optional ones after
     extensions = [
-        # Core: HTTP & Data Formats
-        "httpfs",
-        "http_client",
-        "json",
-        "icu",
-        "duckdb_mcp",
-        # Advanced Data Structs & Logic
-        "jsonata",
-        "duckpgq",
-        "bitfilters",
-        "lindel",
+        # Spec Engine core (required)
+        ("json", True),
+        ("minijinja", True),  # Template rendering
+        ("json_schema", True),  # JSON Schema validation
+        ("duckdb_mcp", True),  # MCP integration
+        # HTTP & Data (required)
+        ("httpfs", True),
+        ("http_client", True),
+        ("icu", True),
+        # HTTP Server (optional but recommended)
+        ("httpserver", False),
+        # Advanced Data Structures
+        ("jsonata", False),  # JSONata query/transform
+        ("duckpgq", False),  # Property graphs
+        ("bitfilters", False),  # Bloom/MinHash
+        ("lindel", False),  # Linear algebra
         # AI/LLM Stack
-        "vss",  # Vector Similarity Search (native)
+        ("vss", False),  # Vector Similarity Search
         # Text Processing
-        "htmlstringify",  # HTML to plain text
-        "lsh",  # Locality Sensitive Hashing
-        # Template Engine
-        "minijinja",  # Jinja2-like templates in SQL
+        ("htmlstringify", False),  # HTML to text
+        ("lsh", False),  # Locality Sensitive Hashing
         # Extended Data Sources
-        "shellfs",  # Shell commands as tables
-        "zipfs",  # Read ZIP archives
-        # Real-time (optional, may fail on some platforms)
-        "radio",  # WebSocket & Redis PubSub
+        ("shellfs", False),  # Shell commands as tables
+        ("zipfs", False),  # ZIP archive access
+        # Real-time (optional)
+        ("radio", False),  # WebSocket & Redis PubSub
     ]
 
-    loaded_extensions = []
-    for ext in extensions:
+    loaded = []
+    for ext, required in extensions:
         try:
             con.sql(f"INSTALL {ext};")
             con.sql(f"LOAD {ext};")
-            loaded_extensions.append(ext)
+            loaded.append(ext)
             print(f"Loaded extension: {ext}", file=sys.stderr)
-        except Exception as e:
-            print(f"Failed to load {ext}: {e}", file=sys.stderr)
+        except Exception:
             try:
                 con.sql(f"INSTALL {ext} FROM community;")
                 con.sql(f"LOAD {ext};")
-                loaded_extensions.append(ext)
+                loaded.append(ext)
                 print(f"Loaded extension {ext} from community", file=sys.stderr)
-            except Exception as e2:
-                print(f"Skipping {ext}: {e2}", file=sys.stderr)
+            except Exception as e:
+                if required:
+                    print(f"REQUIRED extension {ext} failed: {e}", file=sys.stderr)
+                else:
+                    print(f"Skipping optional extension {ext}: {e}", file=sys.stderr)
 
-    # 2. MCP Config Discovery
-    print("Discovering MCP configurations...", file=sys.stderr)
-    mcp_configs = find_mcp_config()
-    mcp_servers = extract_mcp_servers(mcp_configs)
+    return loaded
 
-    if mcp_servers:
-        setup_mcp_tables(con, mcp_servers)
-    else:
-        print("No MCP configurations found", file=sys.stderr)
-        # Create empty table for consistency
-        con.sql("""
-            CREATE OR REPLACE TABLE mcp_servers (
-                name VARCHAR,
-                command VARCHAR,
-                args VARCHAR[],
-                env JSON,
-                source_config VARCHAR
-            )
-        """)
 
-    # 3. Create Agent Config Tables
-    print("Creating agent config tables...", file=sys.stderr)
+def create_legacy_tables(con: duckdb.DuckDBPyConnection) -> None:
+    """
+    Create legacy agent config tables for backwards compatibility.
+    These will eventually be migrated to the Spec Engine.
+    """
     con.sql("""
-        -- Agent configuration
+        -- Agent configuration (legacy - migrate to spec_objects)
         CREATE TABLE IF NOT EXISTS agent_config (
             id VARCHAR PRIMARY KEY,
             name VARCHAR NOT NULL DEFAULT 'Desktop Agent',
@@ -227,7 +229,7 @@ def main():
             denied_patterns VARCHAR[]
         );
 
-        -- MCP server configs for agent (separate from discovered mcp_servers)
+        -- MCP server configs for agent
         CREATE TABLE IF NOT EXISTS agent_mcp_servers (
             id VARCHAR PRIMARY KEY,
             agent_id VARCHAR,
@@ -280,7 +282,7 @@ def main():
             messages JSON DEFAULT '[]'
         );
 
-        -- Pending approvals (SR-6.5)
+        -- Pending approvals
         CREATE TABLE IF NOT EXISTS pending_approvals (
             id INTEGER PRIMARY KEY,
             session_id VARCHAR NOT NULL,
@@ -294,10 +296,10 @@ def main():
             resolved_by VARCHAR
         );
 
-        -- Create sequence for audit log if not exists
+        -- Sequences
         CREATE SEQUENCE IF NOT EXISTS audit_seq START 1;
 
-        -- Organization tables
+        -- Organization tables (legacy - migrate to spec_objects kind='org')
         CREATE TABLE IF NOT EXISTS orgs (
             id VARCHAR PRIMARY KEY,
             name VARCHAR NOT NULL,
@@ -351,31 +353,19 @@ def main():
             updated_at TIMESTAMP DEFAULT now()
         );
     """)
-    print("Agent config tables created.", file=sys.stderr)
+    print("Legacy tables created.", file=sys.stderr)
 
-    # 3b. Seed organization configurations
-    try:
-        from .orgs import generate_org_seed_sql
 
-        org_seed_sql = generate_org_seed_sql()
-        for stmt in org_seed_sql.split(";"):
-            stmt = stmt.strip()
-            if stmt:
-                try:
-                    con.sql(stmt)
-                except Exception as e:
-                    print(f"Error seeding org: {e}", file=sys.stderr)
-        print("Organization configs seeded.", file=sys.stderr)
-    except ImportError:
-        print("Orgs module not available, skipping seed", file=sys.stderr)
-    except Exception as e:
-        print(f"Error seeding orgs: {e}", file=sys.stderr)
-
-    # 4. Load SQL Macros from sql/ directory
+def load_sql_macros(con: duckdb.DuckDBPyConnection) -> int:
+    """
+    Load SQL macros from the sql/ directory.
+    Returns total number of macros loaded.
+    """
     sql_dir = os.path.join(os.path.dirname(__file__), "sql")
+    total_loaded = 0
+
     if os.path.isdir(sql_dir):
         sql_files = sorted(f for f in os.listdir(sql_dir) if f.endswith(".sql"))
-        total_loaded = 0
         for sql_file in sql_files:
             sql_path = os.path.join(sql_dir, sql_file)
             with open(sql_path, "r", encoding="utf-8") as f:
@@ -397,7 +387,6 @@ def main():
                     print(f"Error in {sql_file}: {e}", file=sys.stderr)
             total_loaded += loaded
             print(f"Loaded {loaded} macros from {sql_file}", file=sys.stderr)
-        print(f"Total: {total_loaded} macros loaded.", file=sys.stderr)
     else:
         # Fallback to legacy macros.sql
         macros_path = os.path.join(os.path.dirname(__file__), "macros.sql")
@@ -405,7 +394,6 @@ def main():
             with open(macros_path, "r", encoding="utf-8") as f:
                 sql_script = f.read()
             statements = split_sql_statements(sql_script)
-            loaded = 0
             for statement in statements:
                 lines = [
                     ln
@@ -416,12 +404,100 @@ def main():
                     continue
                 try:
                     con.sql(statement)
-                    loaded += 1
+                    total_loaded += 1
                 except Exception as e:
                     print(f"Error executing macro: {e}", file=sys.stderr)
-            print(f"Loaded {loaded} macros from macros.sql", file=sys.stderr)
+            print(f"Loaded {total_loaded} macros from macros.sql", file=sys.stderr)
 
-    # 5. Register Python UDFs
+    return total_loaded
+
+
+def main():
+    """
+    Main entry point for the Agent Farm MCP Server.
+
+    Initialization order:
+    1. Create DuckDB connection
+    2. Load core extensions (including Spec Engine dependencies)
+    3. Initialize Spec Engine (schema, macros, seed data)
+    4. Discover MCP configurations
+    5. Create legacy tables (for backwards compatibility)
+    6. Load additional SQL macros
+    7. Seed organization configs
+    8. Register Python UDFs
+    9. Start MCP Server
+    """
+    # Get database path from environment or use in-memory
+    db_path = os.environ.get("DUCKDB_DATABASE", ":memory:")
+
+    # Initialize DuckDB connection
+    con = duckdb.connect(database=db_path)
+    print(f"Initializing Agent Farm (db: {db_path})...", file=sys.stderr)
+
+    # 1. Load Core Extensions
+    print("Loading extensions...", file=sys.stderr)
+    loaded_extensions = load_core_extensions(con)
+
+    # 2. Initialize Spec Engine (the heart of the system)
+    print("Initializing Spec Engine...", file=sys.stderr)
+    try:
+        from .spec_engine import get_spec_engine, register_spec_engine_tools
+
+        spec_engine = get_spec_engine(con)
+        spec_tools = register_spec_engine_tools(con)
+        print(f"Spec Engine: Registered {len(spec_tools)} UDFs", file=sys.stderr)
+    except ImportError as e:
+        print(f"Spec Engine module not available: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"Error initializing Spec Engine: {e}", file=sys.stderr)
+
+    # 3. MCP Config Discovery
+    print("Discovering MCP configurations...", file=sys.stderr)
+    mcp_configs = find_mcp_config()
+    mcp_servers = extract_mcp_servers(mcp_configs)
+
+    if mcp_servers:
+        setup_mcp_tables(con, mcp_servers)
+    else:
+        print("No MCP configurations found", file=sys.stderr)
+        con.sql("""
+            CREATE OR REPLACE TABLE mcp_servers (
+                name VARCHAR,
+                command VARCHAR,
+                args VARCHAR[],
+                env JSON,
+                source_config VARCHAR
+            )
+        """)
+
+    # 4. Create Legacy Tables
+    print("Creating legacy tables...", file=sys.stderr)
+    create_legacy_tables(con)
+
+    # 5. Load SQL Macros
+    print("Loading SQL macros...", file=sys.stderr)
+    total_macros = load_sql_macros(con)
+    print(f"Total: {total_macros} macros loaded.", file=sys.stderr)
+
+    # 6. Seed Organization Configurations
+    try:
+        from .orgs import generate_org_seed_sql
+
+        org_seed_sql = generate_org_seed_sql()
+        for stmt in org_seed_sql.split(";"):
+            stmt = stmt.strip()
+            if stmt:
+                try:
+                    con.sql(stmt)
+                except Exception as e:
+                    print(f"Error seeding org: {e}", file=sys.stderr)
+        print("Organization configs seeded.", file=sys.stderr)
+    except ImportError:
+        print("Orgs module not available, skipping seed", file=sys.stderr)
+    except Exception as e:
+        print(f"Error seeding orgs: {e}", file=sys.stderr)
+
+    # 7. Register Python UDFs
     try:
         from .udfs import register_udfs
 
@@ -432,13 +508,27 @@ def main():
     except Exception as e:
         print(f"Error registering UDFs: {e}", file=sys.stderr)
 
-    # 6. Create extension info table
+    # 8. Create extension info table
     con.sql(f"""
         CREATE OR REPLACE TABLE loaded_extensions AS
         SELECT unnest({loaded_extensions!r}::VARCHAR[]) as extension_name
     """)
 
-    # 7. Start MCP Server
+    # 9. Optionally start HTTP server for Spec Engine
+    http_port = os.environ.get("SPEC_ENGINE_HTTP_PORT")
+    http_api_key = os.environ.get("SPEC_ENGINE_API_KEY")
+    if http_port:
+        try:
+            port = int(http_port)
+            if http_api_key:
+                con.sql(f"SELECT httpserve_start('0.0.0.0', {port}, 'X-API-Key {http_api_key}')")
+            else:
+                con.sql(f"SELECT httpserve_start('0.0.0.0', {port})")
+            print(f"Spec Engine HTTP server started on port {port}", file=sys.stderr)
+        except Exception as e:
+            print(f"Failed to start HTTP server: {e}", file=sys.stderr)
+
+    # 10. Start MCP Server
     print("Starting MCP Server...", file=sys.stderr)
     try:
         con.sql("SELECT mcp_server_start('stdio', 'localhost', 0, '{}')")

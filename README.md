@@ -18,7 +18,7 @@
 
 **DuckDB-based Spec-OS for multi-org agent swarms. Central specification management, 175+ SQL macros, meta-learning, MCP Apps, and smart extensions.**
 
-**Since:** December 2025 | **Status:** Production Ready (Feb 2026)
+**Since:** December 2025
 
 [DuckDB](https://duckdb.org) | [Ollama](https://ollama.com) | [MCP Protocol](https://modelcontextprotocol.io) | [Query Farm](https://query.farm)
 

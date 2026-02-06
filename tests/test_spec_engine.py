@@ -82,7 +82,7 @@ class TestSpecEngineSchema:
 
         # Load schema
         schema_path = os.path.join(
-            os.path.dirname(__file__), "..", "db", "spec_engine_schema.sql"
+            os.path.dirname(__file__), "..", "src", "agent_farm", "sql", "spec", "schema.sql"
         )
         load_sql_file(con, schema_path, verbose=True)
 
@@ -145,9 +145,9 @@ class TestSpecEngineSeed:
         try_load_extension(con, "json")
 
         # Load schema and seed data
-        db_dir = os.path.join(os.path.dirname(__file__), "..", "db")
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_schema.sql"))
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_seed.sql"), verbose=True)
+        db_dir = os.path.join(os.path.dirname(__file__), "..", "src", "agent_farm", "sql", "spec")
+        load_sql_file(con, os.path.join(db_dir, "schema.sql"))
+        load_sql_file(con, os.path.join(db_dir, "seed.sql"), verbose=True)
 
         yield con
         con.close()
@@ -206,10 +206,10 @@ class TestSpecEngineMacros:
         self.has_minijinja = try_load_extension(con, "minijinja", from_community=True)
 
         # Load all SQL files
-        db_dir = os.path.join(os.path.dirname(__file__), "..", "db")
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_schema.sql"))
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_macros.sql"))
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_seed.sql"))
+        db_dir = os.path.join(os.path.dirname(__file__), "..", "src", "agent_farm", "sql", "spec")
+        load_sql_file(con, os.path.join(db_dir, "schema.sql"))
+        load_sql_file(con, os.path.join(db_dir, "macros.sql"))
+        load_sql_file(con, os.path.join(db_dir, "seed.sql"))
 
         yield con
         con.close()
@@ -338,10 +338,10 @@ class TestSpecEngineIntegration:
         try_load_extension(con, "json_schema", from_community=True)
 
         # Load all SQL files
-        db_dir = os.path.join(os.path.dirname(__file__), "..", "db")
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_schema.sql"))
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_macros.sql"))
-        load_sql_file(con, os.path.join(db_dir, "spec_engine_seed.sql"))
+        db_dir = os.path.join(os.path.dirname(__file__), "..", "src", "agent_farm", "sql", "spec")
+        load_sql_file(con, os.path.join(db_dir, "schema.sql"))
+        load_sql_file(con, os.path.join(db_dir, "macros.sql"))
+        load_sql_file(con, os.path.join(db_dir, "seed.sql"))
 
         yield con
         con.close()

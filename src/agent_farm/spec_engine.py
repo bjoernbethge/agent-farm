@@ -177,30 +177,30 @@ class SpecEngine:
 
     def _load_schema(self) -> None:
         """Load the Spec Engine schema including intelligence layer."""
-        db_dir = Path(__file__).parent.parent.parent / "db"
+        db_dir = Path(__file__).parent / "sql" / "spec"
 
         # Core schema
-        schema_path = db_dir / "spec_engine_schema.sql"
+        schema_path = db_dir / "schema.sql"
         count = self._load_sql_file(str(schema_path))
         print(f"Spec Engine: Loaded schema ({count} statements)", file=sys.stderr)
 
         # Intelligence layer (embeddings, knowledge bases)
-        intel_path = db_dir / "spec_engine_intelligence.sql"
+        intel_path = db_dir / "intelligence.sql"
         if intel_path.exists():
             intel_count = self._load_sql_file(str(intel_path))
             print(f"Spec Engine: Loaded intelligence layer ({intel_count} statements)", file=sys.stderr)
 
     def _load_macros(self) -> None:
         """Load the Spec Engine macros including RAG macros."""
-        db_dir = Path(__file__).parent.parent.parent / "db"
+        db_dir = Path(__file__).parent / "sql" / "spec"
 
         # Core macros
-        macros_path = db_dir / "spec_engine_macros.sql"
+        macros_path = db_dir / "macros.sql"
         count = self._load_sql_file(str(macros_path))
         print(f"Spec Engine: Loaded macros ({count} macros)", file=sys.stderr)
 
         # RAG/hybrid search macros
-        rag_path = db_dir / "spec_engine_rag.sql"
+        rag_path = db_dir / "rag.sql"
         if rag_path.exists():
             rag_count = self._load_sql_file(str(rag_path))
             print(f"Spec Engine: Loaded RAG macros ({rag_count} macros)", file=sys.stderr)
@@ -215,8 +215,8 @@ class SpecEngine:
         except Exception:
             pass  # Table might not exist yet
 
-        db_dir = Path(__file__).parent.parent.parent / "db"
-        seed_path = db_dir / "spec_engine_seed.sql"
+        db_dir = Path(__file__).parent / "sql" / "spec"
+        seed_path = db_dir / "seed.sql"
         count = self._load_sql_file(str(seed_path))
         print(f"Spec Engine: Loaded seed data ({count} statements)", file=sys.stderr)
 

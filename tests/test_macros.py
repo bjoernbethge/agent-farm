@@ -4,6 +4,7 @@
 import sys
 
 import duckdb
+import pytest
 
 
 def split_sql_statements(sql_content):
@@ -35,7 +36,7 @@ def split_sql_statements(sql_content):
         elif char == ";" and not in_string:
             # End of statement
             stmt = "".join(current).strip()
-            if stmt and not stmt.startswith("--"):
+            if stmt:
                 statements.append(stmt)
             current = []
         else:
@@ -45,7 +46,7 @@ def split_sql_statements(sql_content):
     # Don't forget last statement if no trailing semicolon
     if current:
         stmt = "".join(current).strip()
-        if stmt and not stmt.startswith("--"):
+        if stmt:
             statements.append(stmt)
 
     return statements
@@ -98,8 +99,7 @@ def test_macros():
     sql_dir = os.path.join("src", "agent_farm", "sql")
     sql_files = sorted(glob.glob(os.path.join(sql_dir, "*.sql")))
     if not sql_files:
-        print(f"  No SQL files found in {sql_dir}")
-        return False
+        pytest.skip(f"No SQL files found in {sql_dir}")
 
     statements = []
     for sql_file in sql_files:
@@ -158,7 +158,7 @@ def test_macros():
     print(f"Results: {passed} passed, {failed} failed")
     print("=" * 50)
 
-    return failed == 0
+    assert failed == 0, f"{failed} macro tests failed"
 
 
 if __name__ == "__main__":

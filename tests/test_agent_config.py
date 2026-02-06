@@ -63,7 +63,6 @@ def test_agent_tables():
     """)
 
     print("[PASS] Agent tables created successfully")
-    return True
 
 
 def test_agent_config_insert():
@@ -120,7 +119,6 @@ def test_agent_config_insert():
     assert shell is False, f"Expected shell_enabled=False, got {shell}"
 
     print("[PASS] Agent config insert/query works")
-    return True
 
 
 def test_path_in_workspace_logic():
@@ -147,7 +145,6 @@ def test_path_in_workspace_logic():
         assert result == expected, f"path_in_workspace('{check_path}', '{ws_path}') = {result}, expected {expected}"
 
     print("[PASS] Path workspace checking works")
-    return True
 
 
 def test_blocked_command_logic():
@@ -189,7 +186,6 @@ def test_blocked_command_logic():
         assert result == expected, f"is_blocked_command('{agent_id}', '{cmd}') = {result}, expected {expected}"
 
     print("[PASS] Blocked command checking works")
-    return True
 
 
 def test_audit_log():
@@ -227,7 +223,6 @@ def test_audit_log():
     assert total == 3, f"Expected 3 total entries, got {total}"
 
     print("[PASS] Audit logging works")
-    return True
 
 
 def main():
@@ -248,8 +243,8 @@ def main():
 
     for test in tests:
         try:
-            if test():
-                passed += 1
+            test()
+            passed += 1
         except Exception as e:
             print(f"[FAIL] {test.__name__}: {e}")
             failed += 1

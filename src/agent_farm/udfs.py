@@ -553,7 +553,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_agent_chat,
         [str, str, str],
         str,
-        null_handling="special",
+        null_handling="default",
     )
     registered.append("agent_chat")
 
@@ -563,7 +563,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_agent_tools,
         [str, str, str, str],
         str,
-        null_handling="special",
+        null_handling="default",
     )
     registered.append("agent_tools")
 
@@ -573,7 +573,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_detect_injection,
         [str],
         str,
-        null_handling="special",
+        null_handling="default",
     )
     registered.append("detect_injection_udf")
 
@@ -583,7 +583,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_getenv,
         [str],
         str,
-        null_handling="special",
+        null_handling="default",
     )
     registered.append("getenv")
 
@@ -609,7 +609,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_radio_listen,
         [str, int],
         str,
-        default_null_handling=True,
+        null_handling="default",
     )
     registered.append("radio_listen")
 
@@ -627,7 +627,7 @@ def register_udfs(con: duckdb.DuckDBPyConnection) -> list[str]:
         udf_safe_json_extract,
         [str, str],
         str,
-        null_handling="special",
+        null_handling="default",
     )
     registered.append("safe_json_extract")
 

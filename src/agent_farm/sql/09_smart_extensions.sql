@@ -297,22 +297,22 @@ CREATE OR REPLACE MACRO research_find_similar_docs(query_content, threshold, lim
 
 -- =============================================================================
 -- RADIO (OrchestratorOrg + OpsOrg + StudioOrg)
--- Real-time event streams for agent coordination
+-- In-memory Pub/Sub via Python UDFs (Windows-compatible, no extension needed)
+-- UDFs: radio_subscribe, radio_transmit_message, radio_listen, radio_channel_list
 -- =============================================================================
 
--- Radio subscriptions table
+-- Radio subscriptions tracking table
 CREATE TABLE IF NOT EXISTS radio_subscriptions (
     sub_id VARCHAR PRIMARY KEY,
     org_id VARCHAR NOT NULL,
-    channel_type VARCHAR NOT NULL, -- 'websocket', 'redis'
-    channel_url VARCHAR NOT NULL,
+    channel_name VARCHAR NOT NULL,
     active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT now()
 );
 
 -- OrchestratorOrg: Subscribe to agent events
-CREATE OR REPLACE MACRO orchestrator_subscribe(channel_url_param) AS (
-    SELECT radio_subscribe(channel_url_param)
+CREATE OR REPLACE MACRO orchestrator_subscribe(channel_name_param) AS (
+    SELECT radio_subscribe(channel_name_param)
 );
 
 -- OrchestratorOrg: Broadcast task to agents
@@ -321,8 +321,13 @@ CREATE OR REPLACE MACRO orchestrator_broadcast(channel_param, message_json) AS (
 );
 
 -- OrchestratorOrg: Listen for agent responses (non-blocking)
-CREATE OR REPLACE MACRO orchestrator_listen(timeout_ms) AS (
-    SELECT radio_listen(COALESCE(timeout_ms, 1000))
+CREATE OR REPLACE MACRO orchestrator_listen(channel_param, timeout_ms) AS (
+    SELECT radio_listen(channel_param, COALESCE(timeout_ms, 1000))
+);
+
+-- OrchestratorOrg: List all active channels
+CREATE OR REPLACE MACRO orchestrator_channels() AS (
+    SELECT radio_channel_list()
 );
 
 -- OpsOrg: Subscribe to CI/CD events
@@ -339,6 +344,11 @@ CREATE OR REPLACE MACRO ops_publish_status(channel_param, status_json) AS (
     ))
 );
 
+-- OpsOrg: Listen for CI/CD events
+CREATE OR REPLACE MACRO ops_listen_ci(ci_channel, timeout_ms) AS (
+    SELECT radio_listen(ci_channel, COALESCE(timeout_ms, 1000))
+);
+
 -- StudioOrg: Real-time collaboration events
 CREATE OR REPLACE MACRO studio_collab_event(project_id, event_type, event_data) AS (
     SELECT radio_transmit_message(
@@ -350,6 +360,11 @@ CREATE OR REPLACE MACRO studio_collab_event(project_id, event_type, event_data) 
             'data', event_data
         )
     )
+);
+
+-- StudioOrg: Listen for collaboration events
+CREATE OR REPLACE MACRO studio_listen_collab(project_id, timeout_ms) AS (
+    SELECT radio_listen('studio:' || project_id, COALESCE(timeout_ms, 1000))
 );
 
 -- =============================================================================
